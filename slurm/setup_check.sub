@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH -J t2_setup_cpu
+#SBATCH -o /home/yj576/logs/t2_setup_%j.out
+#SBATCH -e /home/yj576/logs/t2_setup_%j.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=28G
+#SBATCH -t 2:00:00
+#SBATCH --partition=fang   # CPU-only; no GPU requested, so no preemption
+#SBATCH --get-user-env
+set -eo pipefail
+cd /home/yj576/proj/transformer-transformer
+export PATH=$HOME/.local/bin:$PATH   # uv
+export WANDB_MODE=offline
+
+hostname; uv --version
+uv sync --extra dev
+source .venv/bin/activate
+python -c "import torch, jax; print('torch', torch.__version__, torch.version.cuda); print('jax', jax.__version__)"
+pytest tests/robotok -q   # expect 811 passed
+
+# checkpoints (~7.3 GB) + data (~220 MB); no bsdtar on cluster -> wget + unzip
+URL=https://real.stanford.edu/transformer-transformer
+DL=$HOME/downloads/t2   # zips kept here; delete once unpacked if space matters
+mkdir -p "$DL"
+wget -nv -c -P "$DL" $URL/SHA256SUMS $URL/checkpoints.zip $URL/data.zip
+(cd "$DL" && sha256sum -c SHA256SUMS --ignore-missing)
+[ -d checkpoints ] || unzip -q "$DL/checkpoints.zip" -d .
+[ -d data ] || unzip -q "$DL/data.zip" -d .
+ls checkpoints/wheeled_bimanual/z4454nxj data

@@ -38,14 +38,14 @@ def main(cfg):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # NOTE: env_obs_to_batch currently assumes the ctrl task uses the
-    # `forward` timestep sampler
+    # `forward` timestep sampler. Any single-step sampler is equivalent
+    # (memoryless controllers, e.g. bimanual z4454nxj uses `random` with 1 step)
+    timestep_sampler = hydra.utils.instantiate(
+        policy_cfg.datasets.ctrl_rand.dataset.timestep_sampler
+    )
     assert (
-        type(
-            hydra.utils.instantiate(
-                policy_cfg.datasets.ctrl_rand.dataset.timestep_sampler
-            )
-        )
-        is TimestepSampler
+        type(timestep_sampler) is TimestepSampler
+        or timestep_sampler.num_rollout_steps == 1
     )
 
     cfg.eval_fn.policy_server_kwargs.group_time_offsets = (

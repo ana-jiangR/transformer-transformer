@@ -185,3 +185,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# rl_policies.zip (quadruped RL experts)
+choice_to_ckpt_path.json
+umi_on_legs_plus_plus_rl_policies_*/

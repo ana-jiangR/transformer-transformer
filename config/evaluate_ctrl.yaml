@@ -6,3 +6,5 @@ defaults:
   - override hydra/job_logging: custom
 
 task_name: ctrl
+# the decoder is pickled into Ray policy servers; a torch.compile'd one can't be
+use_torch_compile: false

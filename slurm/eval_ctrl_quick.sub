@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH -J t2_ctrl_quick
+#SBATCH -o /home/yj576/logs/t2_ctrl_%j.out
+#SBATCH -e /home/yj576/logs/t2_ctrl_%j.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=96G
+#SBATCH --gres=gpu:nvidia_rtx_a6000:2
+#SBATCH -t 1:00:00
+#SBATCH --partition=fang   # GPU on fang preempts borrowed jobs; keep it short
+#SBATCH --get-user-env
+set -eo pipefail
+cd /home/yj576/proj/transformer-transformer
+export WANDB_MODE=offline
+source .venv/bin/activate
+
+hostname
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+# fail fast if cu130 wheels fell back to CPU on driver 570
+python - <<'EOF'
+import torch, jax
+print('torch', torch.__version__, 'cuda', torch.version.cuda, 'avail', torch.cuda.is_available(), 'n', torch.cuda.device_count())
+print('jax', jax.__version__, jax.devices())
+assert torch.cuda.is_available(), 'torch sees no GPU (driver too old for cu130?)'
+EOF
+
+# quick 3-episode sanity run (1 design seed x traj 0,1,2)
+python scripts/evaluate_ctrl.py evals/ctrl@eval_fn=wheeled_bimanual \
+  ckpt_path=checkpoints/wheeled_bimanual/z4454nxj/045.pt \
+  eval_fn.num_processes=28 \
+  'eval_fn.hardware_traj_pairs_generator.list1=[10000000]' \
+  'eval_fn.hardware_traj_pairs_generator.list2=[0,1,2]'
