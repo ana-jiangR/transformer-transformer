@@ -1,0 +1,29 @@
+# Recipe of the released bimanual multi-task checkpoints (Table 1 Small `52cbmwin`), rebuilt from its cfg.pkl:
+# hardware_gen + ctrl on one design space, memoryless single-step controller (docs/training.md).
+# Usage: python scripts/train.py --config-name=train_bimanual_multitask \
+#          hardware_dataset_path=data/<set>.zarr ctrl_dataset_path=data/<set>.zarr
+defaults:
+  - train
+  - addon_ctrl_bimanual
+  - _self_
+
+ctrl_seq_len:
+  rollout_steps: 1
+
+datasets:
+  ctrl_rand:
+    dataset:
+      timestep_sampler:   # 52cbmwin: forward sampler (addon default `random` matches z4454nxj; same for 1 step)
+        _target_: t2.data.dataset.TimestepSampler
+        step_size: 1
+
+dataloader:
+  num_workers: 64
+
+train:
+  batch_size: 64
+  num_batches_per_epoch: 16384
+  num_epochs: 100
+  learning_rate: 5e-4
+  eval_batch_size: 1
+  normalization_clip: false
