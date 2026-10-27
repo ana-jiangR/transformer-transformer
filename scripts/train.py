@@ -88,6 +88,9 @@ def train_epoch(
                     batch = batch_process_fn(batch)
                 batches.append((task_names, batch))
 
+            # main() runs the whole loop inside one autocast block, whose bf16 weight cache is only freed when
+            # that block exits: without this, every forward reuses the weights cast at step 0 and nothing trains
+            torch.clear_autocast_cache()
             outputs = model(batches=batches, is_eval=is_eval)
 
             # Accumulate stats from all augmentation repeats
@@ -410,6 +413,7 @@ def main(cfg):
                 model.eval()
                 ema.store(model.parameters())
                 ema.copy_to(model.parameters())
+                torch.clear_autocast_cache()  # evals below must see the EMA weights, not cached training casts
                 with torch.inference_mode():
                     if cfg.train.run_val:
                         val_stats = train_epoch(
