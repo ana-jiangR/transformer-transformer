@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH -J t2_dl_train
+#SBATCH -o /home/yj576/logs/t2_dl_train_%j.out
+#SBATCH -e /home/yj576/logs/t2_dl_train_%j.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH -t 12:00:00
+#SBATCH --partition=fang   # CPU-only
+#SBATCH --get-user-env
+# Download one released training set (Hugging Face hqhuy/transformer-transformer) to shared lab storage,
+# verify it, unpack it, and link it into data/. Default: a019e7 (trains 52cbmwin / u5iyxc4d, ~48 GB).
+# Submit: sbatch slurm/download_train.sub            (or: sbatch --export=ALL,SET=<name> slurm/download_train.sub)
+set -eo pipefail
+SET=${SET:-a019e7-bimanual-dishwashing-train-10-1000-q0.05}
+ROOT=/share/fang/yj576/t2_training_data          # TB-scale data lives on /share, not ~
+HF=https://huggingface.co/datasets/hqhuy/transformer-transformer/resolve/main
+mkdir -p "$ROOT/training_data" && cd "$ROOT"
+
+curl -sSfL -o SHA256SUMS "$HF/SHA256SUMS"
+# skip the download if the tar is already here and intact (e.g. downloaded elsewhere and rsync'ed in)
+if ! grep "$SET.zarr.tar" SHA256SUMS | sha256sum -c --status 2>/dev/null; then
+  curl -sSfL -C - --retry 5 -o "training_data/$SET.zarr.tar" "$HF/$SET.zarr.tar"   # resumable
+fi
+grep "$SET.zarr.tar" SHA256SUMS | sha256sum -c                                  # paths carry training_data/
+tar -xf "training_data/$SET.zarr.tar" -C "$ROOT"                                 # -> $ROOT/$SET.zarr (+ .idx, .norm.pt)
+ls -la "$ROOT" | grep "$SET"
+
+# link into the repo's data/ (gitignored) so configs can say data/<set>.zarr
+cd /home/yj576/proj/transformer-transformer
+for f in "$ROOT/$SET".zarr*; do ln -sfn "$f" "data/$(basename "$f")"; done
+ls -la data | grep "$SET"

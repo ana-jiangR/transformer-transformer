@@ -17,9 +17,9 @@ export PATH=$HOME/.local/bin:$PATH   # uv
 ENV=.venv-cu12
 REQ=$(mktemp)
 
-# everything from uv.lock except the CUDA 13 stack
+# everything from uv.lock except the CUDA 13 stack (cuda-toolkit 13 would pull nvidia-* 13 libs)
 uv export --frozen --extra dev --no-hashes --no-emit-project \
-  | grep -vE '^(torch|torchvision|triton|jax-cuda13|nvidia-)' > "$REQ"
+  | grep -vE '^(torch|torchvision|triton|jax-cuda13|nvidia-|cuda-toolkit|cuda-bindings)' > "$REQ"
 
 uv venv "$ENV" --python 3.12 --clear
 uv pip install --python "$ENV" -r "$REQ"

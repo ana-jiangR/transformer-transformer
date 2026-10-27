@@ -1,0 +1,54 @@
+#!/bin/bash
+#SBATCH -J t2_stage1_bi
+#SBATCH -o /home/yj576/logs/t2_stage1_bi_%j.out
+#SBATCH -e /home/yj576/logs/t2_stage1_bi_%j.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=96G
+#SBATCH --gres=gpu:nvidia_rtx_a6000:2
+#SBATCH -t 12:00:00
+#SBATCH --partition=fang
+#SBATCH --get-user-env
+# Stage 1, bimanual: ctrl evals (Table 1 models + z4454nxj) and multi-traj co-design (mgoc83ra).
+# Each step logs separately and a failure doesn't stop the rest.
+cd /home/yj576/proj/transformer-transformer
+export WANDB_MODE=offline
+LOG=/home/yj576/logs/stage1_bi_$SLURM_JOB_ID
+mkdir -p "$LOG"
+
+hostname
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+
+# pick the first env whose torch sees the GPU (.venv = CUDA 13, .venv-cu12 = CUDA 12.6)
+for ENV in .venv .venv-cu12; do
+  if $ENV/bin/python -c "import torch, sys; sys.exit(not torch.cuda.is_available())" 2>/dev/null; then
+    break
+  fi
+  ENV=
+done
+[ -n "$ENV" ] || { echo "no env sees the GPU"; exit 1; }
+echo "using $ENV"
+source $ENV/bin/activate
+python -c "import torch, jax; print('torch', torch.__version__, torch.cuda.device_count(), 'gpus'); print('jax', jax.devices())"
+
+run() {  # run <name> <cmd...>: time it, log it, keep going on failure
+  local name=$1; shift
+  echo "===== $name  $(date +%T)"
+  /usr/bin/time -f "$name wall %E" "$@" > "$LOG/$name.log" 2>&1 && echo "$name OK" || echo "$name FAILED (see $LOG/$name.log)"
+  grep -E "metric/|done/|reward/|validity|hardware_meta/" "$LOG/$name.log" | tail -n 20
+}
+
+# ctrl eval: docs' protocol = 5 designs x 26 dish washing trajs (130 episodes)
+for CKPT in wheeled_bimanual/z4454nxj/045.pt wheeled_bimanual/52cbmwin/025.pt wheeled_bimanual/u5iyxc4d/049.pt; do
+  run "ctrl_$(basename $(dirname $CKPT))_$(basename $CKPT .pt)" \
+    python scripts/evaluate_ctrl.py evals/ctrl@eval_fn=wheeled_bimanual \
+      ckpt_path=checkpoints/$CKPT eval_fn.num_processes=28
+done
+
+# co-design: one design for all 26 trajs (paper's bimanual row), zeroth order, paper rollout setting
+run codesign_mgoc83ra_multitraj_zeroth \
+  python scripts/evaluate_hardware_opt.py --config-name=evaluate_hardware_opt_bimanual_multitraj \
+    ckpt_path=checkpoints/wheeled_bimanual/mgoc83ra/035.pt eval_fn.runner.infer_controller_weights=false
+
+echo "done $(date +%T)"

@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH -J t2_datagen
+#SBATCH -o /home/yj576/logs/t2_datagen_%A_%a.out
+#SBATCH -e /home/yj576/logs/t2_datagen_%A_%a.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=34   # one Mink worker per robot (+2); parallelism caps at num_hardware
+#SBATCH --mem=96G
+#SBATCH -t 2:00:00
+#SBATCH --partition=fang   # CPU-only (Mink oracle needs no GPU)
+#SBATCH --requeue
+#SBATCH --get-user-env
+# Stage 1 (data generation), small scale: wheeled bimanual Mink rollouts, as in docs/data_generation.md but
+# 32 random robots x 10 episodes (paper: 5K x 10). Array task = PDP-style action noise: 0 -> qpos_noise 0.0 (repo default),
+# 1 -> 0.05 (what the released training sets used, "q0.05").
+# Uses the TRAIN-only motions: the config's default pickle (data/bimanual_dish_washing.pkl) also contains
+# all 26 test trajectories used by the Table 1 / co-design evals.
+# Submit: sbatch --array=0-1 slurm/stage1_datagen_small.sub
+cd /home/yj576/proj/transformer-transformer
+source .venv-cu12/bin/activate
+export WANDB_MODE=offline
+export RAY_TMPDIR=/tmp/ray_${SLURM_JOB_ID}   # separate Ray session per task: two tasks on one node otherwise collide
+
+NOISES=(0.0 0.05)
+NOISE=${NOISES[${SLURM_ARRAY_TASK_ID:?submit as an array}]}
+OUT=results/datagen/bimanual_q${NOISE}
+rm -rf "$OUT" "$OUT".zarr*; mkdir -p "$OUT"   # a requeued task restarts clean
+echo "qpos_noise=$NOISE on $(hostname), $(nproc) cpus"
+
+/usr/bin/time -f "wall %E, max RSS %M KB" \
+python scripts/inference.py --config-name=datagen_wheeled_bimanual \
+  runner.env.pickle_path=data/bimanual_dish_washing_train.pkl \
+  runner.qpos_noise=$NOISE \
+  num_hardware=32 num_episodes_per_hardware=10 num_processes=32 \
+  data_path=$OUT.zarr hydra.run.dir=$OUT/hydra

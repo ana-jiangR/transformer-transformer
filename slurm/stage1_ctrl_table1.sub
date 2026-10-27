@@ -1,0 +1,67 @@
+#!/bin/bash
+#SBATCH -J t2_table1
+#SBATCH -o /home/yj576/logs/t2_table1_%A_%a.out
+#SBATCH -e /home/yj576/logs/t2_table1_%A_%a.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=48   # ctrl eval speed scales with sim workers (= CPUs - 2)
+#SBATCH --mem=128G
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a6000|6000ada   # A6000 or RTX 6000 Ada (both run .venv-cu12)
+#SBATCH -t 4:00:00
+#SBATCH --partition=fang,gpu   # whichever starts first; gpu = borrowed, preemptible (--requeue)
+#SBATCH --requeue
+#SBATCH --get-user-env
+# Paper Table 1 (bimanual cross-embodiment control): 5 design choices x 5 hardware seeds x 26 dish
+# washing trajs = 650 episodes per controller. Array tasks:
+#   0-29  learned controllers: 6 checkpoints (52cbmwin = Small, u5iyxc4d = Large; all released epochs) x 5 choices
+#   30-34 Mink oracle, one per choice (CPU only; submit without a GPU, see below)
+# Needs use_flash_attn: false in config/evaluate_ctrl.yaml (flash attention drops the ctrl task's padding mask);
+# results/table1 holds the earlier flash-on runs, which are invalid for the learned controllers.
+# Submit:
+#   sbatch --array=0-29%4 slurm/stage1_ctrl_table1.sub
+#   sbatch --array=30-34 -p fang --gres=none --constraint= --cpus-per-task=8 --mem=32G slurm/stage1_ctrl_table1.sub
+# Plot:
+#   python scripts/scatter_plot_control_performance.py wheeled_bimanual --choices 00 01 1 20 21 \
+#     --mink results/table1/choice{00,01,1,20,21}/mink.zarr \
+#     --small <ctrl_eval_summary.zarr per choice> --large <...>
+cd /home/yj576/proj/transformer-transformer
+export WANDB_MODE=offline
+
+CKPTS=(52cbmwin/018 52cbmwin/023 52cbmwin/025 u5iyxc4d/020 u5iyxc4d/032 u5iyxc4d/049)
+CHOICES=("0,0" "0,1" "1" "2,0" "2,1")   # all 5 discrete bimanual designs (enumerate_choices)
+UNIFORMS=(11 11 12 11 11)               # continuous params per choice; [1] has one more
+SEEDS="10000000,10000001,10000002,10000003,10000004"
+# infer_controller_weights (Mink cost weights; also used by the reset before the learned controller takes over).
+# Override per submission: sbatch --export=ALL,ICW=true,RESULTS=results/table1_icwtrue ...
+ICW=${ICW:-false}
+RESULTS=${RESULTS:-results/table1_noflash}
+
+T=${SLURM_ARRAY_TASK_ID:?submit as an array}
+if (( T < 30 )); then C=$(( T % 5 )); CKPT=${CKPTS[$(( T / 5 ))]}; else C=$(( T - 30 )); CKPT=mink; fi
+TAG=choice${CHOICES[$C]//,/}
+OUT=$RESULTS/$TAG/${CKPT//\//_}
+rm -rf "$OUT"   # a requeued task restarts clean
+[[ $CKPT == mink ]] && rm -rf $RESULTS/$TAG/mink.zarr*
+mkdir -p "$OUT"
+export WANDB_DIR=$OUT RAY_TMPDIR=/tmp/ray_${SLURM_JOB_ID}
+GEN="robot_generator.choices=[${CHOICES[$C]}] robot_generator.num_uniforms=${UNIFORMS[$C]}"
+echo "task $T: $TAG $CKPT ICW=$ICW -> $OUT on $(hostname)"
+source .venv-cu12/bin/activate   # CUDA 12.6 (Mink tasks only need the CPU side)
+
+if [[ $CKPT == mink ]]; then
+  # oracle: Mink DiffIK on the same (hardware seed, traj) pairs; episode seed i -> traj i
+  python scripts/inference.py --config-name=datagen_wheeled_bimanual \
+    env@runner.env=wheeled_bimanual_from_choice runner.env.pickle_path=data/bimanual_dish_washing_test.pkl \
+    $(for g in $GEN; do echo runner.env.$g; done) runner.infer_controller_weights=$ICW \
+    "hardware_seeds=[$SEEDS]" num_episodes_per_hardware=26 num_processes=5 \
+    data_path=$RESULTS/$TAG/mink.zarr hydra.run.dir=$OUT/hydra
+else
+  python scripts/evaluate_ctrl.py evals/ctrl@eval_fn=wheeled_bimanual \
+    ckpt_path=checkpoints/wheeled_bimanual/$CKPT.pt \
+    $(for g in $GEN; do echo eval_fn.runner.env.$g; done) eval_fn.runner.infer_controller_weights=$ICW \
+    "eval_fn.hardware_traj_pairs_generator.list1=[$SEEDS]" \
+    eval_fn.num_processes=$(( SLURM_CPUS_PER_TASK - 2 )) \
+    eval_fn.policy_server_kwargs.batch_size=${PSB:-64} eval_fn.num_policies_per_gpu=${NPG:-2} \
+    hydra.run.dir=$OUT/hydra
+fi

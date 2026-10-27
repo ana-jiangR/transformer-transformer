@@ -1,0 +1,59 @@
+#!/bin/bash
+#SBATCH -J t2_codesign_bi
+#SBATCH -o /home/yj576/logs/t2_codesign_bi_%A_%a.out
+#SBATCH -e /home/yj576/logs/t2_codesign_bi_%A_%a.err
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a6000|6000ada   # A6000 or RTX 6000 Ada (both run .venv-cu12)
+#SBATCH -t 24:00:00
+#SBATCH --partition=fang,gpu
+#SBATCH --requeue
+#SBATCH --get-user-env
+# Paper Fig. 5 bimanual row (+ Tables 5/12/16): one design for all 26 dish washing trajs (multitraj),
+# mgoc83ra, 9 seeds, Mink validation with the paper's rollout setting.
+# Grid = 3 rewards x 2 methods x 8 budgets = 48 runs; array task T = one run, alone on its GPU
+# (multitraj diffuses num_seeds x 26 sequences at once, so packing runs on one GPU OOMs at large budgets).
+#   T = 16*reward + 8*method + budget_idx   (reward: only/joint_vel/size, method: unguided/guided, budget: 1..128)
+# Submit:  sbatch --array=0-47%6 slurm/stage1_codesign_bimanual.sub
+# Plot:    python scripts/plot_hardware_opt.py paths.results_root=results/codesign_bimanual \
+#            'experiments=[bimanual/tracking_only/multi_traj,bimanual/tracking_joint_vel/multi_traj,bimanual/tracking_size/multi_traj]'
+# Concurrent runs inflate optimize_time; the plot config's optimize_time_overrides carry the authors' bimanual timings.
+cd /home/yj576/proj/transformer-transformer
+export WANDB_MODE=offline
+source .venv-cu12/bin/activate   # CUDA 12.6: runs on Fang's driver 570 and newer
+
+REWARDS=(tracking_only tracking_joint_vel tracking_size_bimanual)
+METHODS=(unguided guided)
+BUDGETS=(1 2 4 8 16 32 64 128)
+
+T=${SLURM_ARRAY_TASK_ID:?submit as an array}
+REWARD=${REWARDS[$(( T / 16 ))]}; METHOD=${METHODS[$(( T / 8 % 2 ))]}; N=${BUDGETS[$(( T % 8 ))]}
+if [[ $METHOD == guided ]]; then
+  # DSG settings for bimanual (docs/visualization.md table): scale 0.2, eta 1.0, default clipping
+  OPT="hardware_optimizer@eval_fn.hardware_optimizer_fn=guided_diffusion eval_fn.hardware_optimizer_fn.guidance.scale=0.2 eta=1.0"
+  # guidance backprops through all num_seeds x 26 trajs at once: n>=64 OOMs on 48 GB, so sample in chunks of 32
+  # (independent samples, same results; only wall clock changes)
+  (( N > 32 )) && OPT="$OPT eval_fn.hardware_optimizer_fn.batch_size=32"
+else
+  OPT="eta=0.0"
+fi
+OUT=results/codesign_bimanual/${REWARD}_${METHOD}_n$N
+rm -rf "$OUT"; mkdir -p "$OUT"   # a requeued task restarts clean (no stale runs for the plotter)
+echo "task $T: $REWARD $METHOD n=$N on $(hostname)"
+
+# tags, reward and budget must be on the CLI: plot_hardware_opt.py classifies runs from the recorded argv
+WANDB_DIR=$OUT python scripts/evaluate_hardware_opt.py --config-name=evaluate_hardware_opt_bimanual_multitraj \
+  "tags=[bimanual,$REWARD,$METHOD,multitraj]" \
+  reward_fns@eval_fn.hardware_optimizer_fn.reward_fns=$REWARD \
+  eval_fn.hardware_optimizer_fn.num_seeds=$N $OPT \
+  ckpt_path=checkpoints/wheeled_bimanual/mgoc83ra/035.pt \
+  eval_fn.runner.infer_controller_weights=false \
+  hydra.run.dir=$OUT/hydra > "$OUT/run.log" 2>&1
+
+# per-seed errors (e.g. CUDA OOM) are caught as invalid designs, so check explicitly
+echo "seed errors: $(tr '\r' '\n' < "$OUT/run.log" | grep -cE 'ERROR +seed:')"
+grep -E "validity|metric/pos_err/mean|metric/orn_err/mean|done/bad_termination" "$OUT/run.log" | tail -n 5
+[ -n "$(find "$OUT" -name hardware_opt_summary.zarr -print -quit)" ] || { echo "no summary zarr"; exit 1; }
