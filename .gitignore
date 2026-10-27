@@ -189,3 +189,6 @@ cython_debug/
 # rl_policies.zip (quadruped RL experts)
 choice_to_ckpt_path.json
 umi_on_legs_plus_plus_rl_policies_*/
+
+# Stage 1+ eval outputs (wandb runs, zarrs)
+results/
