@@ -8,3 +8,6 @@ defaults:
 task_name: ctrl
 # the decoder is pickled into Ray policy servers; a torch.compile'd one can't be
 use_torch_compile: false
+# the ctrl task needs its key-padding masks; flash attention drops them (inference.yaml's
+# default is meant for hardware_gen, which has none) -> robots with padded tokens fail
+use_flash_attn: false
